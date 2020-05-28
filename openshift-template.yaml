@@ -1,0 +1,253 @@
+---
+kind: "Template"
+apiVersion: "v1"
+metadata:
+  name: "openshift-tv"
+  annotations:
+    openshift.io/display-name: "OpenShift.tv"
+    description: "Provides website redirects for openshift.tv"
+    iconClass: "icon-shadowman"
+    template.openshift.io/provider-display-name: "Red Hat, Inc."
+message: "The following service(s) have been created in your project: ${NAME}."
+labels:
+  template: "openshift-tv"
+objects:
+  - kind: "Service"
+    apiVersion: "v1"
+    metadata:
+      annotations:
+        kubernetes.io/tls-acme: "true"
+      name: "${NAME}"
+      annotations:
+        description: "Exposes and load balances the frontend application pods"
+      labels:
+        app: "${NAME}"
+    spec:
+      ports:
+        - name: "8080-tcp"
+          port: 8080
+          protocol: "TCP"
+          targetPort: 8080
+      selector:
+        name: "${NAME}"
+
+  - kind: "Route"
+    apiVersion: "v1"
+    metadata:
+      annotations:
+        kubernetes.io/tls-acme: "true"
+      name: "openshift-tv"
+      labels:
+        app: "${NAME}"
+    spec:
+      host: "openshift.tv"
+      to:
+        kind: "Service"
+        name: "${NAME}"
+        weight: 1
+      port:
+        targetPort: "8080-tcp"
+      tls:
+        insecureEdgeTerminationPolicy: Allow
+
+  - kind: "Route"
+    apiVersion: "v1"
+    metadata:
+      annotations:
+        kubernetes.io/tls-acme: "true"
+      name: "www-openshift-tv"
+      labels:
+        app: "${NAME}"
+    spec:
+      host: "www.openshift.tv"
+      to:
+        kind: "Service"
+        name: "${NAME}"
+        weight: 1
+      port:
+        targetPort: "8080-tcp"
+      tls:
+        insecureEdgeTerminationPolicy: Allow
+
+  - kind: "ImageStream"
+    apiVersion: "v1"
+    metadata:
+      name: "${NAME}"
+      annotations:
+        description: "Keeps track of changes in the ${NAME} application image"
+      labels:
+        app: "${NAME}"
+
+  - kind: "ImageStream"
+    apiVersion: "v1"
+    metadata:
+      name: "httpd-24-rhel7"
+      annotations:
+        description: "Upstream httpd 2.4 s2i image"
+      labels:
+        app: "${NAME}"
+    spec:
+      lookupPolicy:
+        local: false
+      tags:
+      - annotations: null
+        from:
+          kind: "DockerImage"
+          name: "registry.access.redhat.com/rhscl/httpd-24-rhel7"
+        generation: 0
+        importPolicy:
+          scheduled: true
+        name: "latest"
+        referencePolicy:
+          type: "Source"
+
+  - kind: "BuildConfig"
+    apiVersion: "v1"
+    metadata:
+      name: "${NAME}"
+      annotations:
+        description: "Defines how to perform the build for ${NAME} before deployment"
+      labels:
+        app: "${NAME}"
+    spec:
+      nodeSelector:
+      source:
+        type: "Git"
+        git:
+          uri: "${SOURCE_REPOSITORY_URL}"
+          ref: "${SOURCE_REPOSITORY_REF}"
+        contextDir: "${CONTEXT_DIR}"
+      strategy:
+        type: "Source"
+        sourceStrategy:
+          from:
+            kind: "ImageStreamTag"
+            name: "httpd-24-rhel7:latest"
+      output:
+        to:
+          kind: "ImageStreamTag"
+          name: "${NAME}:latest"
+      triggers:
+        - type: "ImageChange"
+        - type: "ConfigChange"
+        - type: "GitHub"
+          github:
+            secret: "${GITHUB_WEBHOOK_SECRET}"
+
+  - kind: "DeploymentConfig"
+    apiVersion: "v1"
+    metadata:
+      name: "${NAME}"
+      annotations:
+        description: "Defines how to deploy the httpd deployment"
+      labels:
+        app: "${NAME}"
+    spec:
+      strategy:
+        activeDeadlineSeconds: 21600
+        resources: {}
+        rollingParams:
+          intervalSeconds: 1
+          maxSurge: 25%
+          maxUnavailable: 25%
+          timeoutSeconds: 600
+          updatePeriodSeconds: 1
+        type: "Rolling"
+      triggers:
+        - type: "ImageChange"
+          imageChangeParams:
+            automatic: true
+            containerNames:
+              - "${NAME}"
+            from:
+              kind: "ImageStreamTag"
+              name: "${NAME}:latest"
+        - type: "ConfigChange"
+      replicas: 1
+      test: false
+      selector:
+        name: "${NAME}"
+      template:
+        metadata:
+          name: "${NAME}"
+          labels:
+            name: "${NAME}"
+            app: "${NAME}"
+        spec:
+          containers:
+            - name: "${NAME}"
+              ports:
+                - containerPort: 8080
+              resources:
+                requests:
+                  cpu: "${CPU_REQUEST}"
+                  memory: "${MEMORY_REQUEST}"
+                limits:
+                  cpu: "${CPU_LIMIT}"
+                  memory: "${MEMORY_LIMIT}"
+
+  - kind: "HorizontalPodAutoscaler"
+    apiVersion: "autoscaling/v1"
+    metadata:
+      name: "${NAME}"
+      labels:
+        app: "${NAME}"
+    spec:
+      scaleTargetRef:
+        kind: DeploymentConfig
+        name: "${NAME}"
+        apiVersion: "v1"
+      minReplicas: 2
+      maxReplicas: 5
+      targetCPUUtilizationPercentage: 75
+
+parameters:
+  - name: "NAME"
+    displayName: "Application name"
+    description: "The name assigned to all of the application components defined in this template."
+    required: true
+    value: "openshift-tv"
+
+  - name: "SOURCE_REPOSITORY_URL"
+    displayName: "Git Repository URL"
+    description: "The URL of the repository with your application source code."
+    required: true
+    value: "https://github.com/openshift-cs/openshift.tv.git"
+
+  - name: "SOURCE_REPOSITORY_REF"
+    displayName: "Git Reference"
+    description: "Set this to a branch name, tag or other ref of your repository if you are not using the default branch."
+
+  - name: "CONTEXT_DIR"
+    displayName: "Context Directory"
+    description: "Set this to the relative path to your project if it is not in the root of your repository."
+
+  - name: "CPU_REQUEST"
+    displayName: "CPU Request"
+    description: "Requested amount of CPU the httpd container will use."
+    required: true
+    value: "50m"
+
+  - name: "CPU_LIMIT"
+    displayName: "CPU Limit"
+    description: "Maximum amount of CPU the httpd container can use."
+    required: true
+    value: "500m"
+
+  - name: "MEMORY_REQUEST"
+    displayName: "Memory Request"
+    description: "Requested amount of memory the httpd container will use."
+    required: true
+    value: "100Mi"
+
+  - name: "MEMORY_LIMIT"
+    displayName: "Memory Limit"
+    description: "Maximum amount of memory the httpd container can use."
+    required: true
+    value: "512Mi"
+
+  - name: "GITHUB_WEBHOOK_SECRET"
+    displayName: "GitHub Webhook Secret"
+    description: "A secret string used to configure the GitHub webhook."
+    generate: "expression"
+    from: "[a-zA-Z0-9]{40}"
